@@ -1,0 +1,6 @@
+torch==2.5.1
+torchvision==0.20.1
+numpy>=1.26,<3
+Pillow>=10,<13
+scipy>=1.11,<2
+pycocotools>=2.0.8,<3
