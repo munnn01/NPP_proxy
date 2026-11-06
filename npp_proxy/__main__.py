@@ -11,8 +11,10 @@ import torch
 from .codec import BPG, read_rgb, save_rgb
 from .metrics import bd_rate
 from .models import NPP, MinnenProxy
+from .proxy import checkpoint_proxy, pretrained_proxy
+from .proxy_diagnostics import calibrated_quality, proxy_diagnostics
 from .tasks import CLASSIFIERS, DETECTORS, FlickrPatches, Task
-from .training import PROXY_LAMBDA, TASK_LAMBDA, algorithm1, fit_proxy_loss, load_state, optimize
+from .training import PROXY_LAMBDA, TASK_LAMBDA, algorithm1, fit_proxy_loss, fixed_sample_offset, load_state, optimize
 
 
 def codec_for(args):
@@ -27,21 +29,33 @@ def load_npp(path, device):
 
 
 def train_proxy(args):
-    if args.target == 'bpg' and not (args.init or args.resume or args.from_scratch):
-        raise ValueError('BPG fine-tuning requires --init, --resume, or explicit --from-scratch')
+    quality = args.pretrained_quality
+    if args.calibration_root and not args.calibration:
+        raise ValueError('--calibration-root requires --calibration')
+    if args.calibration:
+        if args.target != 'bpg':
+            raise ValueError('--calibration selects pretrained weights for BPG fine-tuning')
+        quality = calibrated_quality(args.calibration, args)
+    if args.target == 'bpg' and not (args.init or args.resume or quality or args.from_scratch):
+        raise ValueError('BPG fine-tuning requires --calibration, --pretrained-quality, --init, --resume, or --from-scratch')
     codec = codec_for(args) if args.target == 'bpg' else None
     data = FlickrPatches(args.data, args.crop_size)
     if not len(data):
         raise ValueError(f'No proxy training images found in {args.data}')
-    proxy = MinnenProxy().to(args.device).train()
-    if args.init:
-        proxy.load_state_dict(load_state(args.init))
+    if args.resume or args.init:
+        proxy, saved_metadata = checkpoint_proxy(args.resume or args.init, args.qp)
+        quality = saved_metadata.get('pretrained_quality')
+    else:
+        proxy = pretrained_proxy(quality) if quality is not None else MinnenProxy()
+    proxy = proxy.to(args.device).train()
 
     def update(batch, _rng):
         return fit_proxy_loss(torch.stack(batch).to(args.device), args.qp, proxy, codec)
 
-    optimize(args, proxy, 'proxy', data, update,
-             {'qp': args.qp, 'target': args.target, 'crop_size': args.crop_size, 'codec_level': args.codec_level})
+    metadata = {'qp': args.qp, 'target': args.target, 'crop_size': args.crop_size, 'codec_level': args.codec_level}
+    if quality is not None:
+        metadata['pretrained_quality'] = quality
+    optimize(args, proxy, 'proxy', data, update, metadata)
 
 
 def train_npp(args):
@@ -51,8 +65,11 @@ def train_npp(args):
     if not adaptive and args.fixed:
         raise ValueError('--fixed initializes the adaptive stage')
     npp = NPP(adaptive).to(args.device).train()
+    sample_offset = 0
     if args.fixed:
-        npp.load_fixed(load_state(args.fixed))
+        checkpoint = torch.load(args.fixed, map_location='cpu', weights_only=True)
+        npp.load_fixed(checkpoint.get('model', checkpoint.get('state_dict', checkpoint)))
+        sample_offset = fixed_sample_offset(checkpoint, args.data, args.seed, args.task, args.annotations)
     codec = None if args.proxy_only else codec_for(args)
     task = Task(args.task, None, args.device, args.task_weights)
     data = task.dataset(args.data, args.annotations, train=True)
@@ -62,10 +79,9 @@ def train_npp(args):
     proxies = {}
     for qp in qps:
         proxy_path = args.proxy_dir / f'qp{qp}.pt'
-        model = MinnenProxy().to(args.device)
-        model.load_state_dict(load_state(proxy_path))
+        model, _ = checkpoint_proxy(proxy_path, qp, codec.level if codec else None)
         # Training mode adds quantization noise and preserves input gradients. Weights stay frozen.
-        proxies[qp] = model.train().requires_grad_(False)
+        proxies[qp] = model.to(args.device).train().requires_grad_(False)
 
     def update(batch, rng):
         qp = rng.choice(qps)
@@ -82,7 +98,7 @@ def train_npp(args):
              {'task': args.task, 'backbone': task.backbone, 'task_weights': task.weight_id,
               'proxy_dir': str(args.proxy_dir.resolve()), 'qps': list(qps), 'proxy_only': args.proxy_only,
               'codec_level': args.codec_level,
-              'annotations': str(args.annotations.resolve()) if args.annotations else None})
+              'annotations': str(args.annotations.resolve()) if args.annotations else None}, sample_offset)
 
 
 @torch.no_grad()
@@ -100,11 +116,13 @@ def evaluate(args):
     for qp in args.qps:
         rates, bit_totals, results = defaultdict(list), defaultdict(int), defaultdict(list)
         total_pixels = 0
+        total_pre_mse = 0.0
         ids = []
         for index in range(count):
             example = data[index]
             source = example[0].to(args.device)
             filtered = npp(source.unsqueeze(0), qp)[0]
+            total_pre_mse += (filtered - source).square().mean().item()
             pixel_count = source.shape[-2] * source.shape[-1]
             total_pixels += pixel_count
             if args.task == 'detection':
@@ -124,7 +142,8 @@ def evaluate(args):
             else:
                 metric = sum(results[variant]) / count * 100
             row = {'variant': variant, 'qp': qp, 'images': count, 'mean_bpp': sum(values) / count,
-                   'pooled_bpp': bit_totals[variant] / total_pixels, 'metric_percent': metric}
+                   'pooled_bpp': bit_totals[variant] / total_pixels, 'metric_percent': metric,
+                   'mean_pre_mse': total_pre_mse / count if variant == 'npp+bpg' else 0.0}
             rows.append(row)
             print(row, flush=True)
     curves = {name: [(r['mean_bpp'], r['metric_percent']) for r in rows if r['variant'] == name]
@@ -201,7 +220,23 @@ def parser():
     proxy.add_argument('--crop-size', type=positive, default=256)
     initial = proxy.add_mutually_exclusive_group()
     initial.add_argument('--init', type=Path)
+    initial.add_argument('--calibration', type=Path)
+    initial.add_argument('--pretrained-quality', type=int, choices=range(1, 9))
     initial.add_argument('--from-scratch', action='store_true')
+    proxy.add_argument('--calibration-root', type=Path, help='Holdout directory after moving a calibration report')
+
+    for name, calibrating in (('calibrate-proxy', True), ('audit-proxy', False)):
+        diagnostics = command(name, lambda args, calibrating=calibrating: proxy_diagnostics(
+            args, codec_for(args), calibrating))
+        diagnostics.add_argument('--data', type=Path, required=True)
+        diagnostics.add_argument('--seed', type=int, default=2024)
+        diagnostics.add_argument('--samples', type=positive, default=64)
+        diagnostics.add_argument('--crop-size', type=positive, default=256)
+        diagnostics.add_argument('--qps', nargs='+', type=int, choices=PROXY_LAMBDA, default=list(TASK_LAMBDA))
+        if calibrating:
+            diagnostics.add_argument('--qualities', nargs='+', type=int, choices=range(1, 9), default=list(range(1, 9)))
+        else:
+            diagnostics.add_argument('--proxy-dir', type=Path, required=True)
 
     npp = command('train-npp', train_npp)
     training(npp)
