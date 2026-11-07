@@ -26,6 +26,33 @@ class ToyMinnen(nn.Module):
 
 
 class FidelityTests(unittest.TestCase):
+    def test_sessions_cross_lr_milestone_without_resetting_training(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = SimpleNamespace(data=root, seed=2024, batch_size=1, steps=5, decay=2,
+                                   resume=None, output=root / 'model.pt', save_every=100,
+                                   log_every=100, run_updates=2)
+            model = nn.Linear(1, 1)
+            initial = {name: value.clone() for name, value in model.state_dict().items()}
+
+            def update(batch, _rng):
+                return (model(torch.tensor([float(batch[0])])) - 1).square().sum(), {}
+
+            for step, rate in ((2, 1e-4), (4, 1e-5), (5, 1e-5)):
+                optimize(args, model, 'fixed', list(range(7)), update, {})
+                saved = torch.load(args.output, weights_only=True)
+                self.assertEqual(saved['step'], step)
+                self.assertEqual(saved['plan']['target_steps'], 5)
+                self.assertEqual(saved['plan']['decay_step'], 2)
+                self.assertEqual(saved['optimizer']['param_groups'][0]['lr'], rate)
+                args.resume = args.output
+            resumed = {name: value.clone() for name, value in model.state_dict().items()}
+            model.load_state_dict(initial)
+            args.resume, args.run_updates = None, None
+            optimize(args, model, 'fixed', list(range(7)), update, {})
+            for name, value in model.state_dict().items():
+                torch.testing.assert_close(resumed[name], value, atol=0, rtol=0)
+
     def test_identity_initialization_preserves_rgb8_and_deep_gradient(self):
         model = NPP().eval()
         model.initialize_identity()

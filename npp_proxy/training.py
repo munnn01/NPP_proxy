@@ -85,13 +85,16 @@ def load_state(path):
     return contents.get('model', contents.get('state_dict', contents))
 
 
-def save_checkpoint(path, model, optimizer, step, metadata):
+def save_checkpoint(path, model, optimizer, step, metadata, plan=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name, suffix='.tmp', delete=False) as stream:
         temporary = Path(stream.name)
     try:
-        torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
-                    'step': step, 'metadata': metadata}, temporary)
+        state = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+                 'step': step, 'metadata': metadata}
+        if plan is not None:
+            state['plan'] = plan
+        torch.save(state, temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -127,7 +130,11 @@ def optimize(args, model, stage, dataset, update, metadata, sample_offset=0):
     if max_steps <= start:
         raise ValueError(f'--steps ({max_steps}) must exceed completed steps ({start})')
 
-    for step in range(start, max_steps):
+    run_updates = getattr(args, 'run_updates', None)
+    end = min(max_steps, start + run_updates) if run_updates is not None else max_steps
+    plan = {'target_steps': max_steps, 'decay_step': decay, 'initial_lr': 1e-4, 'decayed_lr': 1e-5}
+    print(f'{stage} session {start + 1}..{end}, full target {max_steps}, LR decay after {decay}', flush=True)
+    for step in range(start, end):
         if sampler is None:
             rng = random.Random(args.seed + step)
             torch.manual_seed(args.seed + step)
@@ -146,8 +153,9 @@ def optimize(args, model, stage, dataset, update, metadata, sample_offset=0):
         loss.backward()
         optimizer.step()
         completed = step + 1
-        if completed == 1 or completed % args.log_every == 0 or completed == max_steps:
+        if completed == 1 or completed % args.log_every == 0 or completed == end:
             values = ' '.join(f'{key}={value:.6g}' for key, value in metrics.items())
-            print(f'{stage} {completed}/{max_steps} loss={loss.item():.6g} {values}', flush=True)
-        if completed % args.save_every == 0 or completed == max_steps:
-            save_checkpoint(args.output, model, optimizer, completed, metadata)
+            learning_rate = optimizer.param_groups[0]['lr']
+            print(f'{stage} {completed}/{max_steps} loss={loss.item():.6g} {values} lr={learning_rate:.6g}', flush=True)
+        if completed % args.save_every == 0 or completed == end:
+            save_checkpoint(args.output, model, optimizer, completed, metadata, plan)

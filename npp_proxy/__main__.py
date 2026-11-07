@@ -207,6 +207,7 @@ def parser():
     def training(sub):
         sub.add_argument('--data', required=True, type=Path)
         sub.add_argument('--steps', type=positive)
+        sub.add_argument('--run-updates', type=positive, help='Updates in this session, keeping --steps as the full target')
         sub.add_argument('--decay', type=int)
         sub.add_argument('--batch-size', type=positive, default=1)
         sub.add_argument('--seed', type=int, default=2024)

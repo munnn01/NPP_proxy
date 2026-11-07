@@ -41,6 +41,8 @@ flowchart LR
 
 LR Adam bắt đầu `1e-4`, giảm xuống `1e-5`. CLI mặc định áp dụng lịch 400.000 bước riêng cho mỗi proxy. Mục IV-A công bố số bước của giai đoạn proxy và để ngỏ cách phân bổ giữa các QP. `--steps`, `--decay`, `--batch-size` và `--seed` cho phép ghi rõ cấu hình chạy. Checkpoint giữ model, optimizer, bước, cấu hình và vị trí lấy mẫu. Khi dùng `--resume`, `--steps` là tổng số bước đích. Giữ nguyên `--decay` khi chia giai đoạn thành nhiều phiên.
 
+`--run-updates` giới hạn số cập nhật trong một phiên Kaggle. Tổng số bước đích vẫn giữ ở `--steps`, được lưu trong `plan.target_steps` của checkpoint. Khi resume, optimizer, vị trí lấy mẫu và bộ đếm bước được khôi phục. Learning rate được tính theo bộ đếm toàn giai đoạn và in vào log mỗi lần báo tiến độ.
+
 Mỗi epoch duyệt một hoán vị ngẫu nhiên của dữ liệu. Với cùng tập train, annotation và seed, adaptive bắt đầu tại vị trí fixed đã đi tới. Khi hết một epoch, epoch tiếp theo lấy hoán vị mới. Cách lấy mẫu này tránh lặp lại dãy fixed ở đầu adaptive và có thể tiếp tục đúng vị trí từ checkpoint. Checkpoint cũ tiếp tục theo cơ chế lấy mẫu đã dùng khi tạo checkpoint.
 
 Tùy chọn `train-npp --stage fixed --identity-init` khởi tạo nhánh nông gần phép đồng nhất và đầu ra nhánh sâu bằng `1e-4`. Ảnh RGB 8 bit ban đầu được giữ sau làm tròn, trong khi ReLU ở đầu ra nhánh sâu vẫn nhận gradient. Đây là lựa chọn khởi tạo của bản tái tạo. Kiến trúc NPP, loss Algorithm 1 và cách mã hóa BPG ở mỗi ảnh giữ theo pipeline mô tả bên trên. Khi resume một lượt dùng tùy chọn này, truyền lại `--identity-init`.
@@ -98,15 +100,15 @@ uv pip install -r requirements-pretrained.txt
 
 Mỗi QP proxy là một job độc lập. Dùng cùng calibration JSON cho tất cả QP. Nếu đường dẫn holdout thay đổi giữa máy tạo JSON và Kaggle, truyền `--calibration-root` với đường dẫn holdout hiện tại.
 
-Ví dụ một QP chạy hai phiên, với đường dẫn train ổn định giữa hai notebook và checkpoint phiên trước được gắn làm input cho phiên sau. Điều chỉnh mốc 5.000/10.000 sau khi đo thời gian mỗi bước. Tiếp tục theo lịch mặc định cho tới 400.000 bước.
+Ví dụ một QP chạy nhiều phiên, với đường dẫn train ổn định giữa hai notebook và checkpoint phiên trước được gắn làm input cho phiên sau. Mỗi phiên chạy thêm tối đa 4.096 cập nhật, tổng đích 400.000 và mốc giảm learning rate 320.000 giữ cố định.
 
 ```bash
 python -m npp_proxy train-proxy --data /kaggle/input/flickr/train --qp 34 --batch-size 2 \
-  --calibration /kaggle/input/calibration/calibration.json --steps 5000 \
+  --calibration /kaggle/input/calibration/calibration.json --steps 400000 --decay 320000 --run-updates 4096 \
   --output /kaggle/working/qp34.pt
 
 python -m npp_proxy train-proxy --data /kaggle/input/flickr/train --qp 34 --batch-size 2 \
-  --resume /kaggle/input/previous-run/qp34.pt --steps 10000 \
+  --resume /kaggle/input/previous-run/qp34.pt --steps 400000 --decay 320000 --run-updates 4096 \
   --output /kaggle/working/qp34.pt
 ```
 
