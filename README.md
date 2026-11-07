@@ -43,6 +43,8 @@ LR Adam bắt đầu `1e-4`, giảm xuống `1e-5`. CLI mặc định áp dụng
 
 Mỗi epoch duyệt một hoán vị ngẫu nhiên của dữ liệu. Với cùng tập train, annotation và seed, adaptive bắt đầu tại vị trí fixed đã đi tới. Khi hết một epoch, epoch tiếp theo lấy hoán vị mới. Cách lấy mẫu này tránh lặp lại dãy fixed ở đầu adaptive và có thể tiếp tục đúng vị trí từ checkpoint. Checkpoint cũ tiếp tục theo cơ chế lấy mẫu đã dùng khi tạo checkpoint.
 
+Tùy chọn `train-npp --stage fixed --identity-init` khởi tạo nhánh nông gần phép đồng nhất và đầu ra nhánh sâu bằng `1e-4`. Ảnh RGB 8 bit ban đầu được giữ sau làm tròn, trong khi ReLU ở đầu ra nhánh sâu vẫn nhận gradient. Đây là lựa chọn khởi tạo của bản tái tạo. Kiến trúc NPP, loss Algorithm 1 và cách mã hóa BPG ở mỗi ảnh giữ theo pipeline mô tả bên trên. Khi resume một lượt dùng tùy chọn này, truyền lại `--identity-init`.
+
 ### Các quyết định tái tạo
 
 - Các lớp NPP bám theo mã tác giả, gồm convolution stride 2 và batch normalization. Hình 3 minh họa max-pool. Đếm từ mã là 9.422.235 tham số fixed và 9.461.537 tham số adaptive.

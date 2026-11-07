@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from npp_proxy.codec import save_rgb
+from npp_proxy.models import NPP
 from npp_proxy.proxy import CompressAIProxy
 from npp_proxy.proxy_diagnostics import calibrated_quality, proxy_diagnostics
 from npp_proxy.training import EpochShuffle, fixed_sample_offset, optimize
@@ -25,6 +26,18 @@ class ToyMinnen(nn.Module):
 
 
 class FidelityTests(unittest.TestCase):
+    def test_identity_initialization_preserves_rgb8_and_deep_gradient(self):
+        model = NPP().eval()
+        model.initialize_identity()
+        rgb = torch.randint(0, 256, (1, 3, 35, 47)).float() / 255
+        filtered = model(rgb, 34)
+        torch.testing.assert_close((filtered * 255).round(), (rgb * 255).round(), atol=0, rtol=0)
+        filtered.mean().backward()
+        self.assertGreater(model.UNet.o[-2].weight.grad.abs().sum().item(), 0)
+        adaptive = NPP(adaptive=True).eval()
+        adaptive.load_fixed(model.state_dict())
+        torch.testing.assert_close(adaptive(rgb, 41), filtered)
+
     def test_pretrained_adapter_preserves_input_shape_and_gradients(self):
         rgb = torch.full((2, 3, 31, 65), 0.5, requires_grad=True)
         decoded, bpp = CompressAIProxy(ToyMinnen())(rgb)

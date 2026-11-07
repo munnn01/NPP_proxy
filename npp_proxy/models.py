@@ -108,6 +108,16 @@ class NPP(nn.Module):
             self.Scaling_Net1 = QPScale(16, 3)
             self.Scaling_Net2 = QPScale(16, 3)
 
+    def initialize_identity(self):
+        """Preserve 8-bit RGB initially while keeping the deep output ReLU active."""
+        epsilon = 1e-4
+        nn.init.dirac_(self.conv1.weight)
+        nn.init.zeros_(self.conv1.bias)
+        nn.init.dirac_(self.conv2.weight)
+        nn.init.constant_(self.conv2.bias, -epsilon)
+        nn.init.zeros_(self.UNet.o[-2].weight)
+        nn.init.constant_(self.UNet.o[-2].bias, epsilon)
+
     def load_fixed(self, state):
         expected = {name for name in self.state_dict() if 'Scaling_Net' not in name}
         if not self.adaptive or state.keys() != expected:

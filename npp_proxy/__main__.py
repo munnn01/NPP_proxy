@@ -64,7 +64,11 @@ def train_npp(args):
         raise ValueError('Adaptive training requires --fixed or --resume')
     if not adaptive and args.fixed:
         raise ValueError('--fixed initializes the adaptive stage')
+    if args.identity_init and adaptive:
+        raise ValueError('--identity-init applies to the fixed stage')
     npp = NPP(adaptive).to(args.device).train()
+    if args.identity_init:
+        npp.initialize_identity()
     sample_offset = 0
     if args.fixed:
         checkpoint = torch.load(args.fixed, map_location='cpu', weights_only=True)
@@ -94,11 +98,13 @@ def train_npp(args):
         metrics = {key: sum(values[key] for _, values in samples) / len(samples) for key in samples[0][1]}
         return torch.stack([loss for loss, _ in samples]).mean(), metrics
 
-    optimize(args, npp, args.stage, data, update,
-             {'task': args.task, 'backbone': task.backbone, 'task_weights': task.weight_id,
+    metadata = {'task': args.task, 'backbone': task.backbone, 'task_weights': task.weight_id,
               'proxy_dir': str(args.proxy_dir.resolve()), 'qps': list(qps), 'proxy_only': args.proxy_only,
               'codec_level': args.codec_level,
-              'annotations': str(args.annotations.resolve()) if args.annotations else None}, sample_offset)
+              'annotations': str(args.annotations.resolve()) if args.annotations else None}
+    if args.identity_init:
+        metadata['initialization'] = 'rgb_identity'
+    optimize(args, npp, args.stage, data, update, metadata, sample_offset)
 
 
 @torch.no_grad()
@@ -246,6 +252,7 @@ def parser():
     npp.add_argument('--proxy-dir', required=True, type=Path)
     npp.add_argument('--fixed', type=Path)
     npp.add_argument('--proxy-only', action='store_true')
+    npp.add_argument('--identity-init', action='store_true', help='Initialize fixed NPP to preserve 8-bit RGB')
 
     evaluation = command('evaluate', evaluate)
     task_flags(evaluation)
